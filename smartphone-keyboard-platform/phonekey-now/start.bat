@@ -1,17 +1,17 @@
 @echo off
-REM PhoneKey — Lanceur Windows
-REM Double-clique sur ce fichier pour démarrer
+title PhoneKey — Serveur clavier
 
 echo.
-echo  ⌨  PhoneKey — Installation des dependances...
-echo.
-
-python -m pip install --quiet websockets qrcode pyautogui
+echo  Installation des dependances...
+python -m pip install --quiet websockets qrcode 2>nul
 
 echo.
-echo  Demarrage du serveur PhoneKey...
+echo  ========================================================
+echo   PhoneKey demarre. Notez bien l'URL affichee ensuite.
+echo   Cette fenetre disparait dans 3 secondes apres le lancement.
+echo   Le serveur continue de tourner en arriere-plan.
+echo   Pour arreter : Gestionnaire des taches ^> python.exe
+echo  ========================================================
 echo.
 
 python "%~dp0server.py"
-
-pause

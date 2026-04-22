@@ -508,12 +508,18 @@ def main():
     html = build_html(WS_PORT, PIN, local_ip)
     KeyboardHandler.html_content = html.encode("utf-8")
 
-    # Sur Windows : minimiser CMD après affichage des infos
+    # Sur Windows : cacher CMD complètement après 3s
+    # SW_HIDE=0 rend la fenêtre totalement invisible → plus de vol de focus
     if OS == "Windows":
-        def _do_minimize():
-            time.sleep(2)   # laisser 2s pour lire l'URL avant de minimiser
-            minimize_cmd()
-        threading.Thread(target=_do_minimize, daemon=True).start()
+        print("  ⚠  Cette fenêtre va disparaître dans 3 secondes.")
+        print("     Le serveur continue en arrière-plan.")
+        print("     Pour arrêter : Gestionnaire des tâches → python.exe → Fin de tâche\n")
+        def _hide_cmd():
+            time.sleep(3)
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 0)   # SW_HIDE : complètement invisible
+        threading.Thread(target=_hide_cmd, daemon=True).start()
 
     # Lancer HTTP server dans un thread séparé
     http_server = http.server.HTTPServer(("0.0.0.0", HTTP_PORT), KeyboardHandler)
