@@ -33,8 +33,99 @@ PIN       = str(os.getenv("PHONEKEY_PIN", ""))   # optionnel : PHONEKEY_PIN=1234
 
 OS = platform.system()   # 'Linux', 'Darwin', 'Windows'
 
+# ─── Windows : injection via ctypes (SendInput) — sans pyautogui ─────────────
+
+if OS == "Windows":
+    import ctypes
+    from ctypes import wintypes
+
+    # Virtual key codes Windows
+    _VK = {
+        'BackSpace':0x08,'Tab':0x09,'Return':0x0D,'ENTER':0x0D,
+        'Escape':0x1B,'ESC':0x1B,'Space':0x20,'SPACE':0x20,
+        'Left':0x25,'UP':0x26,'Right':0x27,'DOWN':0x28,
+        'UP':0x26,'LEFT':0x25,'RIGHT':0x27,'DOWN':0x28,
+        'Insert':0x2D,'INS':0x2D,'Delete':0x2E,'DEL':0x2E,
+        'Home':0x24,'HOME':0x24,'End':0x23,'END':0x23,
+        'PGUP':0x21,'PGDN':0x22,'Page_Up':0x21,'Page_Down':0x22,
+        'ctrl':0x11,'shift':0x10,'alt':0x12,'super':0x5B,
+        'CAPS':0x14,'NUMLK':0x90,'PRTSC':0x2C,
+        **{f'F{i}': 0x6F+i for i in range(1,13)},
+        **{str(i): 0x30+i for i in range(10)},
+    }
+    # Ajouter A-Z
+    for _c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+        _VK[_c] = ord(_c)
+        _VK[_c.lower()] = ord(_c)
+
+    KEYEVENTF_KEYUP   = 0x0002
+    KEYEVENTF_UNICODE = 0x0004
+    INPUT_KEYBOARD    = 1
+
+    class _KEYBDINPUT(ctypes.Structure):
+        _fields_ = [('wVk',wintypes.WORD),('wScan',wintypes.WORD),
+                    ('dwFlags',wintypes.DWORD),('time',wintypes.DWORD),
+                    ('dwExtraInfo',ctypes.POINTER(wintypes.ULONG))]
+
+    class _INPUT(ctypes.Structure):
+        class _U(ctypes.Union):
+            _fields_ = [('ki',_KEYBDINPUT)]
+        _anonymous_=('_u',)
+        _fields_=[('type',wintypes.DWORD),('_u',_U)]
+
+    _user32 = ctypes.windll.user32
+    _cmd_hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+    _target_hwnd = [0]  # dernière fenêtre non-CMD focalisée
+
+    def _track_focus():
+        """Suit la fenêtre active pour savoir où injecter."""
+        while True:
+            hwnd = _user32.GetForegroundWindow()
+            if hwnd and hwnd != _cmd_hwnd:
+                _target_hwnd[0] = hwnd
+            time.sleep(0.3)
+
+    def _send_input(vk=0, scan=0, flags=0):
+        inp = _INPUT(type=INPUT_KEYBOARD, ki=_KEYBDINPUT(wVk=vk,wScan=scan,dwFlags=flags))
+        _user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+
+    def _press_vk(vk):
+        _send_input(vk=vk)
+        _send_input(vk=vk, flags=KEYEVENTF_KEYUP)
+
+    def _focus_target():
+        """Remet le focus sur l'application cible avant d'injecter."""
+        hwnd = _target_hwnd[0]
+        if hwnd and _user32.IsWindow(hwnd):
+            _user32.SetForegroundWindow(hwnd)
+            time.sleep(0.05)
+
+    def inject_text_win(text: str):
+        _focus_target()
+        for ch in text:
+            scan = ord(ch)
+            _send_input(scan=scan, flags=KEYEVENTF_UNICODE)
+            _send_input(scan=scan, flags=KEYEVENTF_UNICODE|KEYEVENTF_KEYUP)
+
+    def inject_key_win(key: str, modifiers: list):
+        _focus_target()
+        mod_vks = [_VK[m.lower()] for m in modifiers if m.lower() in _VK]
+        key_vk  = _VK.get(key, _VK.get(key.upper(), 0))
+        if not key_vk:
+            return
+        for vk in mod_vks:
+            _send_input(vk=vk)
+        _press_vk(key_vk)
+        for vk in reversed(mod_vks):
+            _send_input(vk=vk, flags=KEYEVENTF_KEYUP)
+
+    def minimize_cmd():
+        if _cmd_hwnd:
+            ctypes.windll.user32.ShowWindow(_cmd_hwnd, 6)  # SW_MINIMIZE
+
+# ─── Injection unifiée ────────────────────────────────────────────────────────
+
 def inject_text(text: str):
-    """Injecte du texte brut dans l'application active."""
     try:
         if OS == "Linux":
             subprocess.run(["xdotool", "type", "--clearmodifiers", "--", text], check=True)
@@ -43,15 +134,13 @@ def inject_text(text: str):
             subprocess.run(["osascript", "-e",
                 f'tell application "System Events" to keystroke "{safe}"'], check=True)
         elif OS == "Windows":
-            import pyautogui
-            pyautogui.typewrite(text, interval=0.02)
+            inject_text_win(text)
     except FileNotFoundError as e:
         print(f"[ERREUR injection] Commande manquante : {e}")
     except Exception as e:
         print(f"[ERREUR injection] {e}")
 
 def inject_key(key: str, modifiers: list[str]):
-    """Injecte une touche spéciale avec modificateurs."""
     try:
         if OS == "Linux":
             combo = "+".join(modifiers + [key]) if modifiers else key
@@ -59,11 +148,7 @@ def inject_key(key: str, modifiers: list[str]):
         elif OS == "Darwin":
             _macos_key(key, modifiers)
         elif OS == "Windows":
-            import pyautogui
-            if modifiers:
-                pyautogui.hotkey(*[m.lower() for m in modifiers], key)
-            else:
-                pyautogui.press(key)
+            inject_key_win(key, modifiers)
     except FileNotFoundError as e:
         print(f"[ERREUR injection] Commande manquante : {e}")
     except Exception as e:
@@ -119,14 +204,15 @@ def build_html(ws_port: int, pin: str, local_ip: str) -> str:
   .tab{{flex:1;padding:8px 4px;text-align:center;font-size:12px;color:#8888BB;
          cursor:pointer;border-bottom:2px solid transparent}}
   .tab.active{{color:#E94560;border-bottom-color:#E94560}}
-  #layout{{flex:1;overflow-y:auto;background:#16213E;padding:6px 3px}}
+  #spacer{{flex:1;min-height:0}}
+  #layout{{flex-shrink:0;background:#16213E;padding:6px 3px}}
   .row{{display:flex;justify-content:center;margin:2px 0}}
   .key{{background:#0F3460;border:none;border-radius:8px;color:#FFF;
          font-size:15px;font-weight:600;min-height:48px;min-width:28px;
          flex:1;margin:2px;display:flex;align-items:center;justify-content:center;
          cursor:pointer;border-bottom:3px solid #091F3A;position:relative;
          transition:background 80ms,transform 80ms;-webkit-touch-callout:none;
-         flex-direction:column;gap:2px}}
+         touch-action:manipulation;flex-direction:column;gap:2px}}
   .key:active,.key.pressed{{background:#E94560;border-bottom-width:0;transform:translateY(2px)}}
   .key.mod{{background:#1A1A4E}}
   .key.mod.active{{background:#E94560}}
@@ -139,6 +225,8 @@ def build_html(ws_port: int, pin: str, local_ip: str) -> str:
   .qbtn{{flex:1;background:transparent;border:none;color:#8888BB;font-size:11px;
           padding:4px 2px;cursor:pointer;text-align:center}}
   .qbtn:active{{color:#E94560}}
+  #quickbar button{{touch-action:manipulation}}
+  #tabs .tab{{touch-action:manipulation}}
   #pin-screen{{position:fixed;inset:0;background:#0F0F1A;display:flex;
                 flex-direction:column;align-items:center;justify-content:center;gap:16px;
                 z-index:100}}
@@ -165,6 +253,7 @@ def build_html(ws_port: int, pin: str, local_ip: str) -> str:
   <div class="tab" onclick="switchTab('macros')">Macros</div>
   <div class="tab" onclick="switchTab('numpad')">Pavé</div>
 </div>
+<div id="spacer"></div>
 <div id="layout"></div>
 <div id="quickbar">
   <button class="qbtn" onclick="sendCombo(['ctrl'],'c')">Copier</button>
@@ -211,6 +300,18 @@ const MACRO_TEXT = {{
   _clog:"console.log('', );",
   _sql:"SELECT * FROM "
 }};
+
+// Bloquer zoom multi-touch et double-tap partout
+document.addEventListener('touchstart', function(e){{
+  if(e.touches.length>1) e.preventDefault();
+}}, {{passive:false}});
+document.addEventListener('gesturestart', function(e){{ e.preventDefault(); }});
+var lastTap=0;
+document.addEventListener('touchend', function(e){{
+  var now=Date.now();
+  if(now-lastTap<350) e.preventDefault();
+  lastTap=now;
+}}, {{passive:false}});
 
 let ws, mods={{}}, connected=false, tab="qwerty", prevText="";
 
@@ -422,6 +523,12 @@ def main():
     # Construire le HTML avec l'IP et port corrects
     html = build_html(WS_PORT, PIN, local_ip)
     KeyboardHandler.html_content = html.encode("utf-8")
+
+    # Sur Windows : minimiser CMD + démarrer le suivi de fenêtre active
+    if OS == "Windows":
+        threading.Thread(target=_track_focus, daemon=True).start()
+        time.sleep(0.5)   # laisser le temps d'afficher les infos
+        minimize_cmd()
 
     # Lancer HTTP server dans un thread séparé
     http_server = http.server.HTTPServer(("0.0.0.0", HTTP_PORT), KeyboardHandler)
