@@ -33,79 +33,53 @@ PIN       = str(os.getenv("PHONEKEY_PIN", ""))   # optionnel : PHONEKEY_PIN=1234
 
 OS = platform.system()   # 'Linux', 'Darwin', 'Windows'
 
-# ─── Windows : injection via ctypes (SendInput) — sans pyautogui ─────────────
+# ─── Windows : injection via bibliothèque 'keyboard' (niveau kernel) ──────────
 
 if OS == "Windows":
     import ctypes
-    from ctypes import wintypes
 
-    # Virtual key codes Windows
-    _VK = {
-        'BackSpace':0x08,'Tab':0x09,'Return':0x0D,'ENTER':0x0D,
-        'Escape':0x1B,'ESC':0x1B,'Space':0x20,'SPACE':0x20,
-        'Left':0x25,'UP':0x26,'Right':0x27,'DOWN':0x28,
-        'UP':0x26,'LEFT':0x25,'RIGHT':0x27,'DOWN':0x28,
-        'Insert':0x2D,'INS':0x2D,'Delete':0x2E,'DEL':0x2E,
-        'Home':0x24,'HOME':0x24,'End':0x23,'END':0x23,
-        'PGUP':0x21,'PGDN':0x22,'Page_Up':0x21,'Page_Down':0x22,
-        'ctrl':0x11,'shift':0x10,'alt':0x12,'super':0x5B,
-        'CAPS':0x14,'NUMLK':0x90,'PRTSC':0x2C,
-        **{f'F{i}': 0x6F+i for i in range(1,13)},
-        **{str(i): 0x30+i for i in range(10)},
+    # Noms de touches : notre convention → keyboard lib
+    _KB_NAMES = {
+        'BackSpace':'backspace','Tab':'tab','Return':'enter','ENTER':'enter',
+        'Escape':'escape','ESC':'escape','Space':'space','SPACE':'space',
+        'Left':'left','RIGHT':'right','Up':'up','DOWN':'down',
+        'LEFT':'left','RIGHT':'right','UP':'up','DOWN':'down',
+        'Insert':'insert','INS':'insert','Delete':'delete','DEL':'delete',
+        'Home':'home','HOME':'home','End':'end','END':'end',
+        'PGUP':'page up','PGDN':'page down',
+        'CAPS':'caps lock','NUMLK':'num lock','PRTSC':'print screen',
+        'ctrl':'ctrl','alt':'alt','shift':'shift','super':'windows',
+        **{f'F{i}':f'f{i}' for i in range(1,13)},
     }
-    # Ajouter A-Z
-    for _c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
-        _VK[_c] = ord(_c)
-        _VK[_c.lower()] = ord(_c)
 
-    KEYEVENTF_KEYUP   = 0x0002
-    KEYEVENTF_UNICODE = 0x0004
-    INPUT_KEYBOARD    = 1
-
-    class _KEYBDINPUT(ctypes.Structure):
-        _fields_ = [('wVk',wintypes.WORD),('wScan',wintypes.WORD),
-                    ('dwFlags',wintypes.DWORD),('time',wintypes.DWORD),
-                    ('dwExtraInfo',ctypes.POINTER(wintypes.ULONG))]
-
-    class _INPUT(ctypes.Structure):
-        class _U(ctypes.Union):
-            _fields_ = [('ki',_KEYBDINPUT)]
-        _anonymous_=('_u',)
-        _fields_=[('type',wintypes.DWORD),('_u',_U)]
-
-    _user32  = ctypes.windll.user32
-    _kernel32 = ctypes.windll.kernel32
-
-    def _send_input(vk=0, scan=0, flags=0):
-        inp = _INPUT(type=INPUT_KEYBOARD, ki=_KEYBDINPUT(wVk=vk,wScan=scan,dwFlags=flags))
-        _user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
-
-    def _press_vk(vk):
-        _send_input(vk=vk)
-        _send_input(vk=vk, flags=KEYEVENTF_KEYUP)
+    try:
+        import keyboard as _kb
+        _KB_AVAILABLE = True
+    except ImportError:
+        _KB_AVAILABLE = False
+        print("  [!] 'keyboard' non installé. Lance : pip install keyboard")
 
     def inject_text_win(text: str):
-        # KEYEVENTF_UNICODE envoie directement à la fenêtre focalisée — pas besoin de SetForegroundWindow
-        for ch in text:
-            scan = ord(ch)
-            _send_input(scan=scan, flags=KEYEVENTF_UNICODE)
-            _send_input(scan=scan, flags=KEYEVENTF_UNICODE|KEYEVENTF_KEYUP)
+        if _KB_AVAILABLE:
+            _kb.write(text, delay=0)
+        else:
+            print(f"[SKIP] keyboard lib absente, texte ignoré: {repr(text)}")
 
     def inject_key_win(key: str, modifiers: list):
-        mod_vks = [_VK[m.lower()] for m in modifiers if m.lower() in _VK]
-        key_vk  = _VK.get(key, _VK.get(key.upper(), 0))
-        if not key_vk:
+        if not _KB_AVAILABLE:
             return
-        for vk in mod_vks:
-            _send_input(vk=vk)
-        _press_vk(key_vk)
-        for vk in reversed(mod_vks):
-            _send_input(vk=vk, flags=KEYEVENTF_KEYUP)
+        kb_key  = _KB_NAMES.get(key, _KB_NAMES.get(key.upper(), key.lower()))
+        kb_mods = [_KB_NAMES.get(m, m.lower()) for m in modifiers]
+        combo   = '+'.join(kb_mods + [kb_key]) if kb_mods else kb_key
+        try:
+            _kb.press_and_release(combo)
+        except Exception as e:
+            print(f"[ERREUR key] {combo}: {e}")
 
-    def minimize_cmd():
-        hwnd = _kernel32.GetConsoleWindow()
+    def hide_cmd():
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
         if hwnd:
-            _user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
 
 # ─── Injection unifiée ────────────────────────────────────────────────────────
 
@@ -543,15 +517,12 @@ def main():
     # Sur Windows : cacher CMD complètement après 3s
     # SW_HIDE=0 rend la fenêtre totalement invisible → plus de vol de focus
     if OS == "Windows":
-        print("  ⚠  Cette fenêtre va disparaître dans 3 secondes.")
-        print("     Le serveur continue en arrière-plan.")
+        print("  ⚠  Cette fenêtre disparaît dans 3s. Serveur actif en arrière-plan.")
         print("     Pour arrêter : Gestionnaire des tâches → python.exe → Fin de tâche\n")
-        def _hide_cmd():
-            time.sleep(3)
-            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
-            if hwnd:
-                ctypes.windll.user32.ShowWindow(hwnd, 0)   # SW_HIDE : complètement invisible
-        threading.Thread(target=_hide_cmd, daemon=True).start()
+        threading.Thread(
+            target=lambda: (time.sleep(3), hide_cmd()),
+            daemon=True
+        ).start()
 
     # Lancer HTTP server dans un thread séparé
     http_server = http.server.HTTPServer(("0.0.0.0", HTTP_PORT), KeyboardHandler)
