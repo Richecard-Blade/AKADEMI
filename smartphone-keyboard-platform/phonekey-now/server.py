@@ -497,8 +497,40 @@ def print_qr(url: str):
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+def free_ports():
+    """Libère les ports en tuant l'ancien processus PhoneKey s'il tourne encore."""
+    if OS == "Windows":
+        for port in [HTTP_PORT, WS_PORT]:
+            try:
+                r = subprocess.run(
+                    f'netstat -ano | findstr :{port}',
+                    shell=True, capture_output=True, text=True
+                )
+                for line in r.stdout.splitlines():
+                    parts = line.strip().split()
+                    if len(parts) >= 5 and f':{port}' in parts[1] and parts[3] == 'LISTENING':
+                        pid = parts[4]
+                        if pid != str(os.getpid()):
+                            subprocess.run(f'taskkill /F /PID {pid}',
+                                           shell=True, capture_output=True)
+                            print(f"  [✓] Ancien serveur (PID {pid}) arrêté")
+            except Exception:
+                pass
+    else:
+        for port in [HTTP_PORT, WS_PORT]:
+            try:
+                subprocess.run(
+                    f"fuser -k {port}/tcp", shell=True, capture_output=True
+                )
+            except Exception:
+                pass
+
 def main():
     import websockets
+
+    # Libérer les ports avant de démarrer (tue l'ancienne instance si présente)
+    free_ports()
+    time.sleep(0.5)
 
     local_ip = get_local_ip()
     url      = f"http://{local_ip}:{HTTP_PORT}"
@@ -550,9 +582,14 @@ def main():
 
     # Lancer WebSocket server
     async def serve():
-        async with websockets.serve(ws_handler, "0.0.0.0", WS_PORT):
-            print("  [✓] Serveur prêt. En attente de connexion smartphone…\n")
-            await asyncio.Future()
+        try:
+            async with websockets.serve(ws_handler, "0.0.0.0", WS_PORT):
+                print("  [✓] Serveur prêt. En attente de connexion smartphone…\n")
+                await asyncio.Future()
+        except OSError as e:
+            print(f"\n  [!] Port {WS_PORT} encore occupé.")
+            print("      Lance cette commande pour libérer les ports :")
+            print(f"\n      taskkill /F /IM python.exe & python server.py\n")
 
     asyncio.run(serve())
 
