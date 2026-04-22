@@ -73,17 +73,8 @@ if OS == "Windows":
         _anonymous_=('_u',)
         _fields_=[('type',wintypes.DWORD),('_u',_U)]
 
-    _user32 = ctypes.windll.user32
-    _cmd_hwnd = ctypes.windll.kernel32.GetConsoleWindow()
-    _target_hwnd = [0]  # dernière fenêtre non-CMD focalisée
-
-    def _track_focus():
-        """Suit la fenêtre active pour savoir où injecter."""
-        while True:
-            hwnd = _user32.GetForegroundWindow()
-            if hwnd and hwnd != _cmd_hwnd:
-                _target_hwnd[0] = hwnd
-            time.sleep(0.3)
+    _user32  = ctypes.windll.user32
+    _kernel32 = ctypes.windll.kernel32
 
     def _send_input(vk=0, scan=0, flags=0):
         inp = _INPUT(type=INPUT_KEYBOARD, ki=_KEYBDINPUT(wVk=vk,wScan=scan,dwFlags=flags))
@@ -93,22 +84,14 @@ if OS == "Windows":
         _send_input(vk=vk)
         _send_input(vk=vk, flags=KEYEVENTF_KEYUP)
 
-    def _focus_target():
-        """Remet le focus sur l'application cible avant d'injecter."""
-        hwnd = _target_hwnd[0]
-        if hwnd and _user32.IsWindow(hwnd):
-            _user32.SetForegroundWindow(hwnd)
-            time.sleep(0.05)
-
     def inject_text_win(text: str):
-        _focus_target()
+        # KEYEVENTF_UNICODE envoie directement à la fenêtre focalisée — pas besoin de SetForegroundWindow
         for ch in text:
             scan = ord(ch)
             _send_input(scan=scan, flags=KEYEVENTF_UNICODE)
             _send_input(scan=scan, flags=KEYEVENTF_UNICODE|KEYEVENTF_KEYUP)
 
     def inject_key_win(key: str, modifiers: list):
-        _focus_target()
         mod_vks = [_VK[m.lower()] for m in modifiers if m.lower() in _VK]
         key_vk  = _VK.get(key, _VK.get(key.upper(), 0))
         if not key_vk:
@@ -120,8 +103,9 @@ if OS == "Windows":
             _send_input(vk=vk, flags=KEYEVENTF_KEYUP)
 
     def minimize_cmd():
-        if _cmd_hwnd:
-            ctypes.windll.user32.ShowWindow(_cmd_hwnd, 6)  # SW_MINIMIZE
+        hwnd = _kernel32.GetConsoleWindow()
+        if hwnd:
+            _user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
 
 # ─── Injection unifiée ────────────────────────────────────────────────────────
 
@@ -524,11 +508,12 @@ def main():
     html = build_html(WS_PORT, PIN, local_ip)
     KeyboardHandler.html_content = html.encode("utf-8")
 
-    # Sur Windows : minimiser CMD + démarrer le suivi de fenêtre active
+    # Sur Windows : minimiser CMD après affichage des infos
     if OS == "Windows":
-        threading.Thread(target=_track_focus, daemon=True).start()
-        time.sleep(0.5)   # laisser le temps d'afficher les infos
-        minimize_cmd()
+        def _do_minimize():
+            time.sleep(2)   # laisser 2s pour lire l'URL avant de minimiser
+            minimize_cmd()
+        threading.Thread(target=_do_minimize, daemon=True).start()
 
     # Lancer HTTP server dans un thread séparé
     http_server = http.server.HTTPServer(("0.0.0.0", HTTP_PORT), KeyboardHandler)
